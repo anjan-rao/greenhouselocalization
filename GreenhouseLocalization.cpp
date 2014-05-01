@@ -38,11 +38,6 @@ using namespace std;
 #define TRANSITION_MODEL_STD_XY 	0.03f
 #define TRANSITION_MODEL_STD_VXY 	0.20f
 
-#define DEF_PARTICLEFILTER 0
-#ifdef PARTICLEFILTER
-#define NUM_PARTICLES				2000
-#endif
-
 // ------------------------------------------------------
 //				Configuration
 // ------------------------------------------------------
@@ -170,45 +165,7 @@ public:
 	 */
 };
 
-#ifdef PARTICLEFILTER
-// ---------------------------------------------------------------
-//		Implementation of the system models as a Particle Filter
-// ---------------------------------------------------------------
-struct CParticleVehicleData
-{
-	float x,y, vx,vy; // Vehicle state (position & velocities)
-};
 
-class CRangeBearingParticleFilter :
-	public mrpt::bayes::CParticleFilterData<CParticleVehicleData>,
-	public mrpt::bayes::CParticleFilterDataImpl<CRangeBearingParticleFilter,mrpt::bayes::CParticleFilterData<CParticleVehicleData>::CParticleList>
-{
-public:
-
-	 /** Update the m_particles, predicting the posterior of robot pose and map after a movement command.
-	  *  This method has additional configuration parameters in "options".
-	  *  Performs the update stage of the RBPF, using the sensed Sensorial Frame:
-	  *
-	  *   \param action This is a pointer to CActionCollection, containing the pose change the robot has been commanded.
-	  *   \param observation This must be a pointer to a CSensoryFrame object, with robot sensed observations.
-	  *
-	  * \sa options
-	  */
-	void  prediction_and_update_pfStandardProposal(
-		const mrpt::slam::CActionCollection	* action,
-		const mrpt::slam::CSensoryFrame		* observation,
-		const bayes::CParticleFilter::TParticleFilterOptions &PF_options );
-
-
-	void initializeParticles(size_t  numParticles);
-
-	/** Computes the average velocity & position
-   	  */
-	void getMean( float &x, float &y, float &vx, float &vy );
-
-};
-
-#endif
 
 // ------------------------------------------------------
 //				GreenhouseLocalization
@@ -244,28 +201,36 @@ void GreenhouseLocalization()
 	while(rawlogEntry<rawlogEntries-1)
 	{
 		cout << endl << "RAWLOG_ENTRY: " << rawlogEntry << endl << endl;
-		if (!rawlog.getActionObservationPairOrObservation(action,observations,rawlogEntry))
+		size_t temp=2; 
+		//observations = rawlog.getAsObservations(temp);
+		//action = rawlog.getAsAction(temp);
+		if (!rawlog.getActionObservationPair(action,observations,rawlogEntry))
+		{
+			/* if(observations.present())
+				printf("Only observation!");
+			if(action.present())
+				printf("action"); */
 			break; // end of rawlog.
-
+		}
+		observations = rawlog.getAsObservations(temp);
+		CObservationIMUPtr imu = observations->getObservationByClass<CObservationIMU>();
+		if (imu)
+		{
+			cout << format("   IMU angles (degrees): (yaw,pitch,roll)=(%.06f, %.06f, %.06f)",
+			RAD2DEG( imu->rawMeasurements[IMU_YAW] ),
+			RAD2DEG( imu->rawMeasurements[IMU_PITCH] ),
+			RAD2DEG( imu->rawMeasurements[IMU_ROLL] ) ) << endl;
+		}
 	}
-	if(observations.present())
-		printf("Only observation!");
-	if(action.present())
-		printf("action");
+	
 	randomGenerator.randomize();
 
 	CDisplayWindowPlots		winEKF("Tracking - Extended Kalman Filter",450,400);
-#ifdef PARTICLEFILTER
-	CDisplayWindowPlots		winPF("Tracking - Particle Filter",450,400);
-#endif
+
 	winEKF.setPos(10,10);
-#ifdef PARTICLEFILTER
-	winPF.setPos(480,10);
-#endif
+
 	winEKF.axis(-2,20,-10,10); winEKF.axis_equal();
-#ifdef PARTICLEFILTER
-	winPF.axis(-2,20,-10,10);  winPF.axis_equal();
-#endif
+
 
 	// Create EKF
 	// ----------------------
@@ -274,19 +239,7 @@ void GreenhouseLocalization()
 
 	EKF.KF_options.verbose = true;
 	EKF.KF_options.enable_profiler = true;
-#ifdef PARTICLEFILTER
-	// Create PF
-	// ----------------------
-	CParticleFilter::TParticleFilterOptions	PF_options;
-	PF_options.adaptiveSampleSize = false;
-	PF_options.PF_algorithm = CParticleFilter::pfStandardProposal;
-	PF_options.resamplingMethod = CParticleFilter::prSystematic;
 
-	CRangeBearingParticleFilter  particles;
-	particles.initializeParticles(NUM_PARTICLES);
-	CParticleFilter	PF;
-	PF.m_options = PF_options;
-#endif
 #ifdef SAVE_GT_LOGS
 	CFileOutputStream  fo_log_ekf("log_GT_vs_EKF.txt");
 	fo_log_ekf.printf("%%%% GT_X  GT_Y  EKF_MEAN_X  EKF_MEAN_Y   EKF_STD_X   EKF_STD_Y\n");
@@ -298,9 +251,6 @@ void GreenhouseLocalization()
 	float  t=0;
 
 	while (winEKF.isOpen() && 
-#ifdef PARTICLEFILTER
-winPF.isOpen() &&
-#endif
  !mrpt::system::os::kbhit() )
 	{
 		// Update vehicle:
@@ -323,23 +273,7 @@ winPF.isOpen() &&
 
 		// Process with EKF:
 		EKF.doProcess(DELTA_TIME,obsRange, obsBearing);
-#ifdef PARTICLEFILTER
-		// Process with PF:
-		CSensoryFrame SF;
-		CObservationBearingRangePtr obsRangeBear = CObservationBearingRange::Create();
-		obsRangeBear->sensedData.resize(1);
-		obsRangeBear->sensedData[0].range = obsRange;  ///** The sensed  distance, in meters. */
-				/* The sensed landmark direction, in radians, measured as the yaw (azimuth) and pitch (negative elevation).
-                              *  Set pitch to zero for 2D sensors.
-                              * See mrpt::poses::CPose3D for a definition of the 3D angles.
-                              */
-		obsRangeBear->sensedData[0].yaw   = obsBearing;
-		SF.insert( obsRangeBear );  // memory freed by SF.
 
-		EKF.getProfiler().enter("PF:complete_step");
-		PF.executeOn(particles, NULL,&SF);  // Process in the PF
-		EKF.getProfiler().leave("PF:complete_step");
-#endif
 		// Show EKF state:
 		CRangeBearing::KFVector EKF_xkk;
 		CRangeBearing::KFMatrix EKF_pkk;
@@ -348,10 +282,7 @@ winPF.isOpen() &&
 
 		printf("Real: x:%.03f  y=%.03f heading=%.03f v=%.03f w=%.03f\n",x,y,phi,v,w);
 		cout << "EKF: " << EKF_xkk << endl;
-#ifdef PARTICLEFILTER
-		// Show PF state:
-		cout << "Particle filter ESS: " << particles.ESS() << endl;
-#endif
+
 		// Draw EKF state:
 		CRangeBearing::KFMatrix   COVXY(2,2);
 		COVXY(0,0) = EKF_pkk(0,0);
@@ -375,50 +306,14 @@ winPF.isOpen() &&
 		vx[0] = EKF_xkk[0];  vx[1] = vx[0] + EKF_xkk[2] * 1;
 		vy[0] = EKF_xkk[1];  vy[1] = vy[0] + EKF_xkk[3] * 1;
 		winEKF.plot( vx,vy, "g-4", "velocityEKF" );
-
-#ifdef PARTICLEFILTER
-		// Draw PF state:
-		{
-			size_t i,N = particles.m_particles.size();
-			vector_float   parts_x(N),parts_y(N);
-			for (i=0;i<N;i++)
-			{
-				parts_x[i] = particles.m_particles[i].d->x;
-				parts_y[i] = particles.m_particles[i].d->y;
-			}
-
-			winPF.plot( parts_x, parts_y, "b.2", "particles" );
-
-			// Draw PF velocities:
-			float avrg_x, avrg_y, avrg_vx,avrg_vy;
-
-			particles.getMean(avrg_x, avrg_y, avrg_vx,avrg_vy);
-
-			vector_float vx(2),vy(2);
-			vx[0] = avrg_x;  vx[1] = vx[0] + avrg_vx * 1;
-			vy[0] = avrg_y;  vy[1] = vy[0] + avrg_vy * 1;
-			winPF.plot( vx,vy, "g-4", "velocityPF" );
-		}
-#endif
 		// Draw GT:
 		winEKF.plot( vector_float(1,x), vector_float(1,y),"k.8","plot_GT");
-#ifdef PARTICLEFILTER
-		winPF.plot( vector_float(1,x), vector_float(1,y),"k.8","plot_GT");
-#endif
-
-
 		// Draw noisy observations:
 		vector_float  obs_x(2),obs_y(2);
 		obs_x[0] = obs_y[0] = 0;
 		obs_x[1] = obsRange * cos( obsBearing );
 		obs_y[1] = obsRange * sin( obsBearing );
-
 		winEKF.plot(obs_x,obs_y,"r", "plot_obs_ray");
-#ifdef PARTICLEFILTER
-		winPF.plot(obs_x,obs_y,"r", "plot_obs_ray");
-#endif
-
-
 		// Delay:
 		mrpt::system::sleep((int)(DELTA_TIME*1000));
 		t+=DELTA_TIME;
@@ -636,95 +531,3 @@ void CRangeBearing::OnSubstractObservationVectors(KFArray_OBS &A, const KFArray_
 	math::wrapToPiInPlace(A[0]); // The angular component
 }
 
-
-#ifdef PARTICLEFILTER
-/** Update the m_particles, predicting the posterior of robot pose and map after a movement command.
-*  This method has additional configuration parameters in "options".
-*  Performs the update stage of the RBPF, using the sensed Sensorial Frame:
-*
-*   \param action This is a pointer to CActionCollection, containing the pose change the robot has been commanded.
-*   \param observation This must be a pointer to a CSensoryFrame object, with robot sensed observations.
-*
-* \sa options
-*/
-void  CRangeBearingParticleFilter::prediction_and_update_pfStandardProposal(
-		const mrpt::slam::CActionCollection	* action,
-		const mrpt::slam::CSensoryFrame		* observation,
-		const bayes::CParticleFilter::TParticleFilterOptions &PF_options )
-{
-	size_t i,N = m_particles.size();
-
-	// Transition model:
-	for (i=0;i<N;i++)
-	{
-		m_particles[i].d->x += DELTA_TIME*m_particles[i].d->vx + TRANSITION_MODEL_STD_XY * randomGenerator.drawGaussian1D_normalized();
-		m_particles[i].d->y += DELTA_TIME*m_particles[i].d->vy + TRANSITION_MODEL_STD_XY * randomGenerator.drawGaussian1D_normalized();
-
-		m_particles[i].d->vx += TRANSITION_MODEL_STD_VXY * randomGenerator.drawGaussian1D_normalized();
-		m_particles[i].d->vy += TRANSITION_MODEL_STD_VXY * randomGenerator.drawGaussian1D_normalized();
-	}
-
-	CObservationBearingRangePtr obs = observation->getObservationByClass<CObservationBearingRange>();
-	ASSERT_(obs);
-	ASSERT_(obs->sensedData.size()==1);
-	float obsRange = obs->sensedData[0].range;
-	float obsBearing = obs->sensedData[0].yaw;
-
-	// Update weights
-	for (i=0;i<N;i++)
-	{
-		float predicted_range   = sqrt( square(m_particles[i].d->x)+square(m_particles[i].d->y));
-		float predicted_bearing = atan2( m_particles[i].d->y, m_particles[i].d->x );
-
-		m_particles[i].log_w +=
-			log( math::normalPDF( predicted_range-obsRange, 0, RANGE_SENSOR_NOISE_STD ) ) +
-			log( math::normalPDF( math::wrapToPi( predicted_bearing-obsBearing), 0, BEARING_SENSOR_NOISE_STD ) );
-	}
-
-	// Resample is automatically performed by CParticleFilter when required.
-}
-
-
-void  CRangeBearingParticleFilter::initializeParticles(size_t  M)
-{
-	clearParticles();
-	m_particles.resize(M);
-	for (CParticleList::iterator it=m_particles.begin();it!=m_particles.end();it++)
-		it->d = new CParticleVehicleData();
-
-	for (CParticleList::iterator it=m_particles.begin();it!=m_particles.end();it++)
-	{
-		(*it).d->x  = randomGenerator.drawUniform( VEHICLE_INITIAL_X - 2.0f, VEHICLE_INITIAL_X + 2.0f );
-		(*it).d->y  = randomGenerator.drawUniform( VEHICLE_INITIAL_Y - 2.0f, VEHICLE_INITIAL_Y + 2.0f );
-
-		(*it).d->vx = randomGenerator.drawGaussian1D( -VEHICLE_INITIAL_V, 0.2f );
-		(*it).d->vy = randomGenerator.drawGaussian1D( 0, 0.2f );
-
-		it->log_w	= 0;
-	}
-
-}
-
-/** Computes the average velocity
-  */
-void CRangeBearingParticleFilter::getMean( float &x, float &y, float &vx, float &vy )
-{
-	double sumW=0;
-	for (CParticleList::iterator it=m_particles.begin();it!=m_particles.end();it++)
-		sumW+=exp( it->log_w );
-
-	ASSERT_(sumW>0)
-
-	x = y = vx = vy = 0;
-
-	for (CParticleList::iterator it=m_particles.begin();it!=m_particles.end();it++)
-	{
-		const double w = exp(it->log_w) / sumW;
-
-		x += (float)w * (*it).d->x;
-		y += (float)w * (*it).d->y;
-		vx+= (float)w * (*it).d->vx;
-		vy+= (float)w * (*it).d->vy;
-	}
-}
-#endif
