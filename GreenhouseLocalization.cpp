@@ -186,7 +186,8 @@ void GreenhouseLocalization()
 	printf("Loading the rawlog file...");
 	CRawlog			rawlog;
 	rawlog.loadFromRawLogFile(RAWLOG_FILE);
-
+	
+	CFileGZInputStream      rawlogFile( RAWLOG_FILE );
 	rawlogEntries = rawlog.size();
 	std::cout<<"rawlog Entries: "<<rawlogEntries<<"\n";
 	printf("OK\n");
@@ -195,32 +196,26 @@ void GreenhouseLocalization()
 
 	rawlogEntry = 0;
 	CActionCollectionPtr action;
-	CSensoryFramePtr observations;
+	CSensoryFramePtr     SF;
+	CObservationPtr     observations;
 	CPose2D	pdfEstimation;
 
 	while(rawlogEntry<rawlogEntries-1)
 	{
 		cout << endl << "RAWLOG_ENTRY: " << rawlogEntry << endl << endl;
-		size_t temp=2; 
-		//observations = rawlog.getAsObservations(temp);
-		//action = rawlog.getAsAction(temp);
-		if (!rawlog.getActionObservationPair(action,observations,rawlogEntry))
+
+		if (! CRawlog::getActionObservationPairOrObservation( rawlogFile, action,SF, observations, rawlogEntry) )
+                        break; // file EOF
+ 		if (IS_CLASS(observations,CObservationIMU))
 		{
-			/* if(observations.present())
-				printf("Only observation!");
-			if(action.present())
-				printf("action"); */
-			break; // end of rawlog.
-		}
-		observations = rawlog.getAsObservations(temp);
-		CObservationIMUPtr imu = observations->getObservationByClass<CObservationIMU>();
-		if (imu)
-		{
+			CObservationIMUPtr imu = CObservationIMUPtr(observations);
 			cout << format("   IMU angles (degrees): (yaw,pitch,roll)=(%.06f, %.06f, %.06f)",
 			RAD2DEG( imu->rawMeasurements[IMU_YAW] ),
 			RAD2DEG( imu->rawMeasurements[IMU_PITCH] ),
-			RAD2DEG( imu->rawMeasurements[IMU_ROLL] ) ) << endl;
+			RAD2DEG( imu->rawMeasurements[IMU_ROLL] ) ) << endl; 
 		}
+	
+	
 	}
 	
 	randomGenerator.randomize();
