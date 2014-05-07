@@ -58,13 +58,13 @@ std::string		iniFileName;
 		 *	- ACT_SIZE: The dimension of each "action" u_k (or 0 if not applicable).
 		 *	- KFTYPE: The numeric type of the matrices (default: double)
 */
-class CRangeBearing :
+class CImuKF :
 	public mrpt::bayes::CKalmanFilterCapable<4 /* x y vx vy*/, 2 /* range yaw */, 0               , 1 /* Atime */>
 						 // <size_t VEH_SIZE,  size_t OBS_SIZE,  size_t FEAT_SIZE, size_t ACT_SIZE, size typename kftype = double>
 {
 public:
-	CRangeBearing( );
-	virtual ~CRangeBearing();
+	CImuKF( );
+	virtual ~CImuKF();
 
 	void  doProcess( double DeltaTime, double observationRange, double observationBearing );
 
@@ -346,7 +346,7 @@ printf("anjan ok \n");
 
 	// Create EKF
 	// ----------------------
-	CRangeBearing 	EKF;
+	CImuKF 	EKF;
 	EKF.KF_options.method = kfEKFNaive;
 
 	EKF.KF_options.verbose = true;
@@ -387,8 +387,8 @@ printf("anjan ok \n");
 		EKF.doProcess(DELTA_TIME,obsRange, obsBearing);
 
 		// Show EKF state:
-		CRangeBearing::KFVector EKF_xkk;
-		CRangeBearing::KFMatrix EKF_pkk;
+		CImuKF::KFVector EKF_xkk;
+		CImuKF::KFMatrix EKF_pkk;
 
 		EKF.getState( EKF_xkk, EKF_pkk );
 
@@ -396,7 +396,7 @@ printf("anjan ok \n");
 		cout << "EKF: " << EKF_xkk << endl;
 
 		// Draw EKF state:
-		CRangeBearing::KFMatrix   COVXY(2,2);
+		CImuKF::KFMatrix   COVXY(2,2);
 		COVXY(0,0) = EKF_pkk(0,0);
 		COVXY(1,1) = EKF_pkk(1,1);
 		COVXY(0,1) = COVXY(1,0) = EKF_pkk(0,1);
@@ -474,19 +474,19 @@ int main(int argc, char **argv)
 
 
 
-CRangeBearing::CRangeBearing()
+CImuKF::CImuKF()
 {
 	//KF_options.method = kfEKFNaive;
 	KF_options.method = kfEKFAlaDavison;
 
-	// INIT KF STATE
+	// INIT KF STATE   //Anjan need to decide initial state
 	m_xkk.resize(4,0);	// State: (x,y,heading,v,w)
 	m_xkk[0]= VEHICLE_INITIAL_X;
 	m_xkk[1]= VEHICLE_INITIAL_Y;
 	m_xkk[2]=-VEHICLE_INITIAL_V;
 	m_xkk[3]=0;
 
-	// Initial cov:  Large uncertainty
+	// Initial cov:  Large uncertainty  //Anjan Pk_k_minus_1
 	m_pkk.setSize(4,4);
 	m_pkk.unit();
 	m_pkk(0,0)=
@@ -495,13 +495,13 @@ CRangeBearing::CRangeBearing()
 	m_pkk(3,3)= square( 1.0f );
 }
 
-CRangeBearing::~CRangeBearing()
+CImuKF::~CImuKF()
 {
 
 }
 
 
-void  CRangeBearing::doProcess( double DeltaTime, double observationRange, double observationBearing )
+void  CImuKF::doProcess( double DeltaTime, double observationRange, double observationBearing )
 {
 	m_deltaTime = (float)DeltaTime;
 	m_obsBearing = (float)observationBearing;
@@ -514,7 +514,7 @@ void  CRangeBearing::doProcess( double DeltaTime, double observationRange, doubl
 /** Must return the action vector u.
   * \param out_u The action vector which will be passed to OnTransitionModel
   */
-void CRangeBearing::OnGetAction( KFArray_ACT &u ) const
+void CImuKF::OnGetAction( KFArray_ACT &u ) const
 {
 	u[0] = m_deltaTime;
 }
@@ -524,7 +524,7 @@ void CRangeBearing::OnGetAction( KFArray_ACT &u ) const
   * \param inout_x At input has \f$ \hat{x}_{k-1|k-1} \f$, at output must have \f$ \hat{x}_{k|k-1} \f$.
   * \param out_skip Set this to true if for some reason you want to skip the prediction step (to do not modify either the vector or the covariance). Default:false
   */
-void CRangeBearing::OnTransitionModel(
+void CImuKF::OnTransitionModel(
 	const KFArray_ACT &in_u,
 	KFArray_VEH       &inout_x,
 	bool &out_skipPrediction
@@ -542,7 +542,7 @@ void CRangeBearing::OnTransitionModel(
   * \param out_F Must return the Jacobian.
   *  The returned matrix must be \f$N \times N\f$ with N being either the size of the whole state vector or get_vehicle_size().
   */
-void CRangeBearing::OnTransitionJacobian(KFMatrix_VxV  &F) const
+void CImuKF::OnTransitionJacobian(KFMatrix_VxV  &F) const
 {
 	//printf("Anjan in OnTransitionJacobian");
 	F.unit();
@@ -555,7 +555,7 @@ void CRangeBearing::OnTransitionJacobian(KFMatrix_VxV  &F) const
   * \param out_Q Must return the covariance matrix.
   *  The returned matrix must be of the same size than the jacobian from OnTransitionJacobian
   */
-void CRangeBearing::OnTransitionNoise(KFMatrix_VxV &Q) const
+void CImuKF::OnTransitionNoise(KFMatrix_VxV &Q) const
 {
 	//printf("Anjan in OnTransitionNoise");
 	Q(0,0) =
@@ -568,14 +568,14 @@ void CRangeBearing::OnTransitionNoise(KFMatrix_VxV &Q) const
 * \param out_R The noise covariance matrix. It might be non diagonal, but it'll usually be.
 * \note Upon call, it can be assumed that the previous contents of out_R are all zeros.
 */
-void CRangeBearing::OnGetObservationNoise(KFMatrix_OxO &R) const
+void CImuKF::OnGetObservationNoise(KFMatrix_OxO &R) const
 {
 	//printf("Anjan in OnGetObservationNoise");
 	R(0,0) = square( BEARING_SENSOR_NOISE_STD );
 	R(1,1) = square( RANGE_SENSOR_NOISE_STD );
 }
 
-void CRangeBearing::OnGetObservationsAndDataAssociation(
+void CImuKF::OnGetObservationsAndDataAssociation(
 	vector_KFArray_OBS			&out_z,
 	mrpt::vector_int            &out_data_association,
 	const vector_KFArray_OBS	&in_all_predictions,
@@ -597,7 +597,7 @@ void CRangeBearing::OnGetObservationsAndDataAssociation(
   * \param idx_landmark_to_predict The indices of the landmarks in the map whose predictions are expected as output. For non SLAM-like problems, this input value is undefined and the application should just generate one observation for the given problem.
   * \param out_predictions The predicted observations.
   */
-void CRangeBearing::OnObservationModel(
+void CImuKF::OnObservationModel(
 	const vector_size_t       &idx_landmarks_to_predict,
 	vector_KFArray_OBS	&out_predictions
 	) const
@@ -621,7 +621,7 @@ void CRangeBearing::OnObservationModel(
   * \param Hx  The output Jacobian \f$ \frac{\partial h_i}{\partial x} \f$.
   * \param Hy  The output Jacobian \f$ \frac{\partial h_i}{\partial y_i} \f$.
   */
-void CRangeBearing::OnObservationJacobians(
+void CImuKF::OnObservationJacobians(
 	const size_t &idx_landmark_to_predict,
 	KFMatrix_OxV &Hx,
 	KFMatrix_OxF &Hy
@@ -644,7 +644,7 @@ void CRangeBearing::OnObservationJacobians(
 
 /** Computes A=A-B, which may need to be re-implemented depending on the topology of the individual scalar components (eg, angles).
   */
-void CRangeBearing::OnSubstractObservationVectors(KFArray_OBS &A, const KFArray_OBS &B) const
+void CImuKF::OnSubstractObservationVectors(KFArray_OBS &A, const KFArray_OBS &B) const
 {
 	A -= B;
 	math::wrapToPiInPlace(A[0]); // The angular component
