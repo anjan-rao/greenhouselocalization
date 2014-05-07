@@ -78,6 +78,7 @@ public:
 
 	float m_obsBearing,m_obsRange;
 	float m_deltaTime;
+	/* State vectors */
 
 	/** @name Virtual methods for Kalman Filter implementation
 		@{
@@ -172,12 +173,18 @@ public:
 // ------------------------------------------------------
 void GreenhouseLocalization()
 {
-	size_t		rawlogEntry, rawlogEntries;
-
+	size_t	rawlogEntry, rawlogEntries;
+	int firstObservation=0;
+	TTimeStamp  previousTime;
+	double delta_time;
+	struct IMUStateVector{
+	double m_yaw,m_roll,m_pitch,m_x_acc,m_y_acc,m_z_acc; /*Measured data */
+	}imuSV;
+	 
 	// Load configuration!
 	// ------------------------------------------
 
-	std::string		RAWLOG_FILE			= iniFile->read_string("greenhouse-localization","rawlog_file","NOT FOUND!");
+	std::string RAWLOG_FILE = iniFile->read_string("greenhouse-localization","rawlog_file","NOT FOUND!");
 	ASSERT_FILE_EXISTS_(RAWLOG_FILE)
 
 	// --------------------------
@@ -199,25 +206,135 @@ void GreenhouseLocalization()
 	CSensoryFramePtr     SF;
 	CObservationPtr     observations;
 	CPose2D	pdfEstimation;
+	CMatrixDouble33 rotationMatrix, rotationMatrixPrevious ,identityMatrix, res, skewMatrix, num,denom, skewMatrixDenom, temp;
+	 CMatrixDouble m_acc(3,1), acc_updated(3,1), velocityPrevious(3,1), velocity(3,1), rangePrevious(3,1), range(3,1);
+	//CVectorDouble vect_temp(3);
+/*	m_acc(0,0) =0;
+	m_acc(1,0) =1; 
+	m_acc(2,0) =2; */
+	rotationMatrix.unit();
+	rotationMatrixPrevious.unit();
+	identityMatrix.unit();
+	identityMatrix.multiply_Ab(2,identityMatrix);
+ //	printf("I(01) %f (02) %f \n",identityMatrix(0,1),identityMatrix(0,2));
+//	printf("I(00) %f (11) %f  \n",identityMatrix(0,0),identityMatrix(1,1)); 
+	/* for(int i=0; i<=2;i++)
+		for(int j=0;j<=2;j++)
+		{
+			rotationMatrixPrevious(i,j) = 1;
+			rotationMatrix(i,j) =1;
+			
+		} */
 
 	while(rawlogEntry<rawlogEntries-1)
 	{
-		cout << endl << "RAWLOG_ENTRY: " << rawlogEntry << endl << endl;
+		//cout << endl << "RAWLOG_ENTRY: " << rawlogEntry << endl << endl;
 
 		if (! CRawlog::getActionObservationPairOrObservation( rawlogFile, action,SF, observations, rawlogEntry) )
                         break; // file EOF
  		if (IS_CLASS(observations,CObservationIMU))
 		{
 			CObservationIMUPtr imu = CObservationIMUPtr(observations);
-			cout << format("   IMU angles (degrees): (yaw,pitch,roll)=(%.06f, %.06f, %.06f)",
+			if(!firstObservation)
+			{
+				delta_time = 0;	
+				firstObservation = 1;
+			}
+			else
+				delta_time =  timeDifference(previousTime,imu->timestamp);
+			previousTime = imu->timestamp;
+		/*	cout << format("   IMU angles (degrees): (yaw,pitch,roll)=(%.06f, %.06f, %.06f )",
 			RAD2DEG( imu->rawMeasurements[IMU_YAW] ),
 			RAD2DEG( imu->rawMeasurements[IMU_PITCH] ),
 			RAD2DEG( imu->rawMeasurements[IMU_ROLL] ) ) << endl; 
+			cout<< "delta time : "<<delta_time;
+		
+			cout<< format("IMU accleration (x y z) = ( %f %f %f) ",
+				imu->rawMeasurements[IMU_X_ACC],
+				imu->rawMeasurements[IMU_Y_ACC], 
+				imu->rawMeasurements[IMU_Z_ACC]) << endl;
+		
+			cout<< format("IMU angular velocity (YAW PITCH ROLL) = ( %f %f %f) ",
+				imu->rawMeasurements[IMU_YAW_VEL],
+				imu->rawMeasurements[IMU_PITCH_VEL], 
+				imu->rawMeasurements[IMU_ROLL_VEL]) << endl;
+		*/
+		imuSV.m_yaw = imu->rawMeasurements[IMU_YAW_VEL];
+		imuSV.m_roll = imu->rawMeasurements[IMU_ROLL_VEL];
+		imuSV.m_pitch = imu->rawMeasurements[IMU_PITCH_VEL];
+
+	/*	cout<< format("IMU accleration (x y z) = ( %f %f %f) ",
+				imu->rawMeasurements[IMU_X_ACC],
+				imu->rawMeasurements[IMU_Y_ACC], 
+				imu->rawMeasurements[IMU_Z_ACC]) << endl; */
+
+		m_acc(0,0) =imu->rawMeasurements[IMU_X_ACC];
+		m_acc(1,0) =imu->rawMeasurements[IMU_Y_ACC];
+		m_acc(2,0) =imu->rawMeasurements[IMU_Z_ACC];
 		}
 	
+	skewMatrix(0,1) = -imuSV.m_yaw	*	delta_time;
+	skewMatrix(0,2) =  imuSV.m_pitch*	delta_time;
+	skewMatrix(1,0) =  imuSV.m_yaw	*	delta_time;
+	skewMatrix(1,2) = -imuSV.m_roll	*	delta_time;
+	skewMatrix(2,0) = -imuSV.m_pitch*	delta_time;
+	skewMatrix(2,1) =  imuSV.m_roll	*	delta_time;
+
+	/*res.multiply_AB(rotationMatrixPrevious,identityMatrix);
+		identityMatrix = identityMatrix*6; */
+
+	num = identityMatrix	+	skewMatrix;
+	denom = identityMatrix	-	skewMatrix;
+
+/*printf("num \n");
+	printf(" %f  %f  %f\n",num(0,0),num(0,1),num(0,2));
+	printf(" %f  %f  %f\n",num(1,0),num(1,1),num(1,2));
+	printf(" %f  %f  %f\n",num(2,0),num(2,1),num(2,2));
+printf("denom \n");
+	printf(" %f  %f  %f\n",denom(0,0),denom(0,1),denom(0,2));
+	printf(" %f  %f  %f\n",denom(1,0),denom(1,1),denom(1,2));
+	printf(" %f  %f  %f\n",denom(2,0),denom(2,1),denom(2,2)); */
+
+	//printf("yaw roll pitch %f  %f  %f \n",measuredYaw,measuredRoll,measuredPitch );
+	//printf(" numm yaw roll pitch %f  %f  %f \n",measuredYaw,measuredRoll,measuredPitch );
+	//res = num/deno;
+//	deno.setSize(4,4);
+
+	temp = denom.inv();
+
+/*printf("denom inv \n");
+	printf(" %f  %f  %f\n",temp(0,0),temp(0,1),temp(0,2));
+	printf(" %f  %f  %f\n",temp(1,0),temp(1,1),temp(1,2));
+	printf(" %f  %f  %f\n",temp(2,0),temp(2,1),temp(2,2)); */
+
+	res.multiply_AB(num,temp);
+
+/* printf("res \n");
+	printf(" %f  %f  %f\n",res(0,0),res(0,1),res(0,2));
+	printf(" %f  %f  %f\n",res(1,0),res(1,1),res(1,2));
+	printf(" %f  %f  %f\n",res(2,0),res(2,1),res(2,2)); */
+	rotationMatrix.multiply_AB(rotationMatrixPrevious, res);
+/*printf("rotation \n");
+	printf(" %f  %f  %f\n",rotationMatrix(0,0),rotationMatrix(0,1),rotationMatrix(0,2));
+	printf(" %f  %f  %f\n",rotationMatrix(1,0),rotationMatrix(1,1),rotationMatrix(1,2));
+	printf(" %f  %f  %f\n",rotationMatrix(2,0),rotationMatrix(2,1),rotationMatrix(2,2));*/
+
+	rotationMatrixPrevious = rotationMatrix;
+//	Eigen::Vector3d acc_up = rotationMatrix * m_acc;
+	m_acc(2,0) -=9.8; 
+	acc_updated.multiply(rotationMatrix, m_acc);	
+	//printf("acc(x) %f (y) %f  (z) %f\n",acc_updated(0,0),acc_updated(1,0),acc_updated(2,0));
 	
+	acc_updated(0,0) *=delta_time;
+ 	acc_updated(1,0) *=delta_time;
+	acc_updated(2,0) *=delta_time; 
+//	printf("acc*deltatime (x) %f (y) %f  (z) %f\n",acc_updated(0,0),acc_updated(1,0),acc_updated(2,0));
+	velocity = velocityPrevious + acc_updated;
+	velocityPrevious = velocity;
+//	printf("velocity (x) %f (y) %f  (z) %f\n\n",velocity(0,0),velocity(1,0),velocity(2,0));
 	}
-	
+
+printf("anjan ok \n");
 	randomGenerator.randomize();
 
 	CDisplayWindowPlots		winEKF("Tracking - Extended Kalman Filter",450,400);
@@ -413,6 +530,7 @@ void CRangeBearing::OnTransitionModel(
 	bool &out_skipPrediction
 	) const
 {
+	//printf("Anjan in OnTransitionModel");
 	// in_u[0] : Delta time
 	// in_out_x: [0]:x  [1]:y  [2]:vx  [3]: vy
 	inout_x[0] += in_u[0] * inout_x[2];
@@ -426,6 +544,7 @@ void CRangeBearing::OnTransitionModel(
   */
 void CRangeBearing::OnTransitionJacobian(KFMatrix_VxV  &F) const
 {
+	//printf("Anjan in OnTransitionJacobian");
 	F.unit();
 
 	F(0,2) = m_deltaTime;
@@ -438,6 +557,7 @@ void CRangeBearing::OnTransitionJacobian(KFMatrix_VxV  &F) const
   */
 void CRangeBearing::OnTransitionNoise(KFMatrix_VxV &Q) const
 {
+	//printf("Anjan in OnTransitionNoise");
 	Q(0,0) =
 	Q(1,1) = square( TRANSITION_MODEL_STD_XY );
 	Q(2,2) =
@@ -450,6 +570,7 @@ void CRangeBearing::OnTransitionNoise(KFMatrix_VxV &Q) const
 */
 void CRangeBearing::OnGetObservationNoise(KFMatrix_OxO &R) const
 {
+	//printf("Anjan in OnGetObservationNoise");
 	R(0,0) = square( BEARING_SENSOR_NOISE_STD );
 	R(1,1) = square( RANGE_SENSOR_NOISE_STD );
 }
@@ -463,6 +584,7 @@ void CRangeBearing::OnGetObservationsAndDataAssociation(
 	const KFMatrix_OxO          &in_R
 	)
 {
+	//printf("Anjan in OnGetObservationsAndDataAssociation");
 	out_z.resize(1);
 	out_z[0][0] = m_obsBearing;
 	out_z[0][1] = m_obsRange;
@@ -480,6 +602,7 @@ void CRangeBearing::OnObservationModel(
 	vector_KFArray_OBS	&out_predictions
 	) const
 {
+	//printf("Anjan in OnObservationModel");
 	// predicted bearing:
 	kftype x = m_xkk[0];
 	kftype y = m_xkk[1];
@@ -504,6 +627,7 @@ void CRangeBearing::OnObservationJacobians(
 	KFMatrix_OxF &Hy
 	) const
 {
+	//printf("Anjan in OnObservationJacobians");
 	// predicted bearing:
 	kftype x = m_xkk[0];
 	kftype y = m_xkk[1];
